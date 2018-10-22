@@ -19,10 +19,10 @@ class ServerNode:
 
     def __init__(self, node_id, node_port):
 
-        self._name = node_id     # Identification of the server node
-        self._state = 'Follower' # Every server starts as follower
+        self._name = node_id   # Identification of the server node
+        self._state = 'Follower'  # Every server starts as follower
 
-        self.PORT = node_port    # Arbitrary port for the server
+        self._PORT = node_port  # Porta arbitraria para o servidor
 
         # The election timeout is the amount of time a follower waits until becoming a candidate.
         self._election_timeout = random.uniform(150, 300)  # Random value from 150 to 300 milliseconds
@@ -64,8 +64,7 @@ class ServerNode:
                     self.be_candidate()
 
                 elif err.args == 'Hearbeat':  # These messages are sent in intervals specified by the heartbeat timeout.
-                    #  ...then the change is sent to the followers on the next heartbeat.
-                    self.append_entries()      # The leader begins sending out Append Entries messages to its followers.
+                   self.append_entries()      # The leader begins sending out Append Entries messages to its followers.
 
 
             finally:
@@ -142,7 +141,6 @@ class ServerNode:
         msg = {
             'term': self._current_term,
             'leader_id': self._name,
-            'leader_port': self.PORT,  # AppendEntries requests include the network address of the leader
             'prev_log_index': self._last_applied,
             'prev_log_term': self._commit_index,
             'leader_commit': None
@@ -160,16 +158,15 @@ class ServerNode:
         self._current_term += 1
         self.request_vote()
 
-    def send_msg(self, msg, port, host='localhost'):
-
-        # Creates tcp socket
+    def send_msg(self, msg, dest=None):
+        # Cria um socket tcp
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as tcp:
-
-            # Connects to server destination
-            tcp.connect(host, port)
+            # Se conecta no servidor
+            tcp.connect((self.HOST, self._PORT))
 
             # Envia mensagem
             tcp.sendall(bytearray(msg, 'utf-8'))
+            tcp.sendto()
 
             # Recebe dados do servidor
             data = tcp.recv(1024)
@@ -182,7 +179,7 @@ class ServerNode:
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as tcp:
 
             # Une o socket ao host e a porta
-            tcp.bind(('', self.PORT))  # Recebe mensagens de qualquer host
+            tcp.bind(('', self._PORT))  # Recebe mensagens de qualquer host
 
             # Habilita o servidor a aceitar uma conexao
             tcp.listen(1)
@@ -207,13 +204,10 @@ class ServerNode:
                         # Envia para o cliente os dados recebidos
                         # conn.sendall(data)
 
-                        # If it is a message sent from a client
                         if msg['type'] == 'client':
-
-                            # Only the leader handles it
                             if self.state == 'Leader':  # This process is called Log Replication
                                 # change goes to the leader
-                                self._log.append(msg['change'])  # Each change is added as an entry in the nodes's log
+                                # Each change is added as an entry in the nodes's log
                                 # This log entry is currently uncommitted so it won't update the node's value.
 
                                 self.append_entries(msg)  # To commit the entry the node first replicates it to the follower nodes...
@@ -221,44 +215,18 @@ class ServerNode:
                                 # The entry is now committed on the leader node and the node state is "X"
                                 # The leader then notifies the followers that the entry is committed.
                                 # The cluster has now come to consensus about the system state.
-
-                            # If a follower receives a message from a client the it must redirect to the leader
                             else:
-                                self.send_msg(msg, port)
+                                self.send_msg(msg)
 
-                        # If it is a append entry message from the leader
-                        elif msg['type'] == 'apn_en':
-                            self.reply_append_entry(msg)   # Followers must then respond to each Append Entries message.
-                            # TODO: Write entry and reply to leader
+                        if msg['type'] == 'apn_en':  # Followers then respond to each Append Entries message.
+                            # Write entry and reply to leader
                             pass  # deal with received append entries
-
-                        elif msg['type'] == 'heart_beat':
-                            reply = {
-                                'type': 'heart_beat_reply',
-                                'client_if': self._name
-                                }
-                            conn.sendall(reply)
 
                         elif msg['type'] == 'req_vote':
                             self.reply_vote(msg)
 
                         # Imprime os dados recebidos
                         print(msg)
-
-    def reply_append_entry(self, append_entry_msg):
-        """
-        An entry is committed once a majority of followers acknowledge it...
-        :param append_entry_msg:
-        :return:
-        """
-        # TODO: Acknowledge message
-        ack_msg = {
-            'client_id': self._name,
-            'term': self._current_term,
-            'type': 'ack_append_entry'
-        }
-        self.send_msg(ack_msg, append_entry_msg['port'])
-        pass
 
 
 if __name__ == "__main__":
