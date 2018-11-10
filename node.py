@@ -2,6 +2,8 @@ import random
 import time
 import socket
 import signal
+import sys
+
 from contextlib import contextmanager
 
 
@@ -25,10 +27,9 @@ class ServerNode:
         self.PORT = node_port    # Arbitrary port for the server
 
         # The election timeout is the amount of time a follower waits until becoming a candidate.
-        self._election_timeout = random.uniform(150, 300)  # Random value from 150 to 300 milliseconds
-
-        self._votes_in_term = 0  # Votes received by the candidate in a given election term
-        self._heartbeat_timeout = 100  # Must be less then election timeout
+        self._election_timeout = self.set_election_timeout()  # Sets node election timeout
+        self._votes_in_term = 0      # Votes received by the candidate in a given election term
+        self._heartbeat_timeout = 2  # Must be less then election timeout
 
         # Persistent state on all servers
         self._current_term = 0   # Latest term server has seen
@@ -40,38 +41,50 @@ class ServerNode:
         self._last_applied = 0   # Index of highest log entry applied to state machine
 
         # Volatile state on leaders, for each server
-        self._next_index = 0     # Index of the next log entry to send to that server, also known as last log index
+        self._next_index  = 0    # Index of the next log entry to send to that server, also known as last log index
         self._match_index = 0    # Index of highest log entry known to be replicated on server, also known as last log term
 
-    @contextmanager
+        self._leader = None
+
+        self.start()
+
+    def start(self):
+
+        print(f'Starting node {self._name} listening on port {self.PORT} as {self._state}')
+
+        self.config_timeout()
+        self.idle()
+
+    def idle(self):
+
+        try:
+            while True:
+                pass
+        except TimeoutError as e:
+            print(e)
+
+            if e.args == 'Election':
+                # After the election timeout the follower becomes a candidate and starts a new election term...
+                self.be_candidate()
+
+            elif e.args == 'Hearbeat':  # These messages are sent in intervals specified by the heartbeat timeout.
+                #  ...then the change is sent to the followers on the next heartbeat.
+                self.append_entries()      # The leader begins sending out Append Entries messages to its followers.
+
+            self.idle()
+
     def config_timeout(self):
+        print("timeout config")
 
         if self._state == 'Follower':
-            signal.signal(signal.SIGALRM, self.election_timeout_handler())
+            print(f'Configured follower node {self._name} with election timout to: {self._election_timeout}')
+            signal.signal(signal.SIGALRM, self.election_timeout_handler)
             signal.alarm(self._election_timeout)
 
         elif self.state == 'Candidate':
-            signal.signal(signal.SIGALRM, self.election_timeout_handler())
-            signal.alarm(self._election_timeout)
-
-            try:
-                yield
-
-            except TimeoutError as err:
-
-                if err.args == 'Election':
-                    # After the election timeout the follower becomes a candidate and starts a new election term...
-                    self.be_candidate()
-
-                elif err.args == 'Hearbeat':  # These messages are sent in intervals specified by the heartbeat timeout.
-                    #  ...then the change is sent to the followers on the next heartbeat.
-                    self.append_entries()      # The leader begins sending out Append Entries messages to its followers.
-
-
-            finally:
-                # Unregister the signal so it won't be triggered
-                # if the timeout is not reached.
-                signal.signal(signal.SIGALRM, signal.SIG_IGN)
+            print(f'Configured candidate node {self._name} with heartbeat timout to: {self.heartbeat_timeout}')
+            signal.signal(signal.SIGALRM, self.heartbeat_timeout_handler)
+            signal.alarm(self._heartbeat_timeout)
 
     def be_candidate(self):
         self._state = 'Candidate'
@@ -82,12 +95,11 @@ class ServerNode:
         # Votes for itself
         # Sends request vote messages for other nodes
 
-    def election_timeout_handler(self):
+    def election_timeout_handler(self, signum, frame):
         print("Reached election timeout!")
-
         raise TimeoutError('Election')
 
-    def heartbeat_timeout_handler(self):
+    def heartbeat_timeout_handler(self, signum, frame):
         print("Reached hearbeat timeout!")
         raise TimeoutError('Heartbeat')
 
@@ -120,7 +132,7 @@ class ServerNode:
             if msg['term'] == self._current_term:
                 reply_vote = {'candidate_id': msg['candidate_id']}
                 self.send_msg(reply_vote)
-                self._election_timeout = random.uniform(150, 300)  # ...and the node resets its election timeout.
+                self.set_election_timeout()  # ...and the node resets its election timeout.
 
     def vote_in_candidate(self, candidate):
         pass
@@ -130,6 +142,14 @@ class ServerNode:
 
     def notify_followers(self):
         pass
+
+    def set_election_timeout(self):
+        """
+        Set a new election timeout for follower node
+
+        :return: timeout between 5 and 10 seconds
+        """
+        return round(random.uniform(5, 10))
 
     # Remote procedure call
     def append_entries(self):
@@ -263,7 +283,7 @@ class ServerNode:
 
 if __name__ == "__main__":
 
-    name = input("Enter the name of the node: ")
-    port = input("Enter the port of the node: ")
+    name = sys.argv[1]
+    port = sys.argv[2]
 
     server_node = ServerNode(name, port)
