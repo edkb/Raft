@@ -28,12 +28,13 @@ class ServerNode:
         # The election timeout is the amount of time a follower waits until becoming a candidate.
         self._election_timeout = self.set_election_timeout()  # Sets node election timeout
         self._votes_in_term = 0      # Votes received by the candidate in a given election term
-        self._heartbeat_timeout = 2  # Must be less then election timeout
+        self._heartbeat_timeout = self.set_heartbeat_timeout()  # Must be less then election timeout
 
         # Persistent state on all servers
         self._current_term = 0   # Latest term server has seen
         self._voted_for = None   # Candidate id that received vote in current term
-        self._log = []           # log entries; each entry contains command for state machine, and term when entry was received by leader
+        self._log = []           # log entries; each entry contains command for state machine,
+                                 # and term when entry was received by leader
 
         # Volatile state on all servers
         self._commit_index = 0   # Index of highest log entry known to be committed
@@ -85,6 +86,7 @@ class ServerNode:
 
     def heartbeat_timeout_handler(self, signum, frame):
         print("Reached hearbeat timeout!")
+        self.append_entries()
         raise TimeoutError('Heartbeat')
 
     # Remote procedure call
@@ -139,11 +141,6 @@ class ServerNode:
                 }
             return json.dumps(reply_vote)
 
-
-
-    def vote_in_candidate(self, candidate):
-        pass
-
     def commit(self):
         pass
 
@@ -158,6 +155,14 @@ class ServerNode:
         """
         return round(random.uniform(3, 5))
 
+    def set_heartbeat_timeout(self):
+        """
+        Set a new heartbeat timeout for leader node
+
+        :return: timeout of 2 seconds
+        """
+        return 2
+
     # Remote procedure call
     def append_entries(self):
         """
@@ -166,7 +171,11 @@ class ServerNode:
 
         :return:
         """
+        # Refreshes heartbeat
+        self._heartbeat_timeout = self.set_heartbeat_timeout()
+
         msg = {
+            'type': 'apn_en',
             'term': self._current_term,
             'leader_id': self._name,
             'leader_port': self.PORT,  # AppendEntries requests include the network address of the leader
@@ -175,10 +184,16 @@ class ServerNode:
             'leader_commit': None
         }
 
-        self.send_msg(msg)
+        for node, value in self.nodos.items():
+            time.sleep(0.5)
+            if value['name'] != self._name:
+                try:
+                    reply = self.send_msg(msg, value['port'])
+                    print('Append reply: ', reply)
+                except Exception as e:
+                    print(e)
 
-        if time.time() <= self._heartbeat_timeout:
-            self.send_entry()
+        self.send_entry()
 
     def send_entry(self):
         pass
@@ -199,7 +214,7 @@ class ServerNode:
         try:
             # for all nodes in cluster
             for node, value in self.nodos.items():
-                time.sleep(0.1)
+                time.sleep(0.5)
                 if value['name'] != self._name:
                     try:
 
@@ -242,13 +257,11 @@ class ServerNode:
                                     print(f'Node {self._name} becomes {self._state}')
                                     self.receive_msg()
 
-
                     except Exception as e:
                         print(e)
 
                     except KeyboardInterrupt:
                         raise SystemExit()
-
         except:
             return
 
@@ -265,9 +278,9 @@ class ServerNode:
             tcp.sendall(msg.encode('utf-8'))
 
             # Recebe dados do servidor
-            data = tcp.recv(1024)
+            data = tcp.recv(1024).decode('utf-8')
 
-        return data
+            return data
 
     def receive_msg(self):
 
@@ -317,7 +330,8 @@ class ServerNode:
                                 self._log.append(msg['change'])  # Each change is added as an entry in the nodes's log
                                 # This log entry is currently uncommitted so it won't update the node's value.
 
-                                self.append_entries(msg)  # To commit the entry the node first replicates it to the follower nodes...
+                                # To commit the entry the node first replicates it to the follower nodes...
+                                self.append_entries(msg)
                                 # Then the leader waits until a majority of nodes have written the entry.
                                 # The entry is now committed on the leader node and the node state is "X"
                                 # The leader then notifies the followers that the entry is committed.
@@ -329,9 +343,10 @@ class ServerNode:
 
                         # If it is a append entry message from the leader
                         elif msg['type'] == 'apn_en':
-                            self.reply_append_entry(msg)   # Followers must then respond to each Append Entries message.
-                            # TODO: Write entry and reply to leader
-                            pass  # deal with received append entries
+                            # Followers must then respond to each Append Entries message.
+                            reply_msg = self.reply_append_entry(msg)
+                            print(f'Replying to {msg["leader_id"]}')
+                            conn.sendall(reply_msg.encode('utf-8'))
 
                         elif msg['type'] == 'heart_beat':
                             reply = {
@@ -352,13 +367,15 @@ class ServerNode:
         :param append_entry_msg:
         :return:
         """
-        # TODO: Acknowledge message
+        # Refreshes election timeout
+        self._election_timeout = self._election_timeout()
+
         ack_msg = {
             'client_id': self._name,
             'term': self._current_term,
             'type': 'ack_append_entry'
         }
-        self.send_msg(ack_msg, append_entry_msg['port'])
+        return json.dumps(ack_msg)
 
 
 if __name__ == "__main__":
