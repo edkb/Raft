@@ -134,7 +134,7 @@ class ServerNode:
         print(type(commit_msg))
         print('Commiting msg: ', commit_msg)
         with open(f'{self._name}.log', 'a') as log_file:
-            log_file.write(commit_msg)
+            log_file.write(commit_msg + '\n')
 
     def send_commit(self):
         commit_msg = str(self._log)
