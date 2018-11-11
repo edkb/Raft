@@ -121,6 +121,7 @@ class ServerNode:
         if msg['term'] > self._current_term:
 
             self._state = "Follower"  # Becomes follower again if term is outdated
+            print('Follower')
 
             self._current_term = msg['term']
             self._voted_for = msg['candidate_id']
@@ -132,9 +133,16 @@ class ServerNode:
 
         else:
             if self._voted_for is None:
+                self._state = "Follower"  # Becomes follower again if term is outdated
+                print('Follower')
+
+                self._current_term = msg['term']
+                self._voted_for = msg['candidate_id']
                 reply_vote = {
+                    'node_id': self._name,
                     'candidate_id': msg['candidate_id']
                 }
+                self.set_election_timeout()  # ...and the node resets its election timeout.
             else:
                 reply_vote = {
                     'candidate_id': self._voted_for
@@ -151,9 +159,9 @@ class ServerNode:
         """
         Set a new election timeout for follower node
 
-        :return: timeout between 3 and 5 seconds
+        :return: timeout between 4 and 7 seconds
         """
-        return round(random.uniform(3, 5))
+        return round(random.uniform(4, 7))
 
     def set_heartbeat_timeout(self):
         """
@@ -174,24 +182,38 @@ class ServerNode:
         # Refreshes heartbeat
         self._heartbeat_timeout = self.set_heartbeat_timeout()
 
-        msg = {
-            'type': 'apn_en',
-            'term': self._current_term,
-            'leader_id': self._name,
-            'leader_port': self.PORT,  # AppendEntries requests include the network address of the leader
-            'prev_log_index': self._last_applied,
-            'prev_log_term': self._commit_index,
-            'leader_commit': None
-        }
-
         for node, value in self.nodos.items():
-            time.sleep(0.5)
             if value['name'] != self._name:
                 try:
-                    reply = self.send_msg(msg, value['port'])
-                    print('Append reply: ', reply)
+
+                    msg = {
+                        'type': 'apn_en',
+                        'term': self._current_term,
+                        'leader_id': self._name,
+                        'leader_port': self.PORT,  # AppendEntries requests include the network address of the leader
+                        'prev_log_index': self._last_applied,
+                        'prev_log_term': self._commit_index,
+                        'leader_commit': None
+                    }
+                    msg = json.dumps(msg)
+
+                    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as tcp:
+
+                        # Connects to server destination
+                        tcp.connect(('', value['port']))
+
+                        print(f'Send app entry to node {node}: {value["name"]}')
+
+                        # Envia mensagem
+                        tcp.sendall(msg.encode('utf-8'))
+
+                        # Recebe dados do servidor
+                        reply = tcp.recv(1024).decode('utf-8')
+
+                        print('Append reply: ', reply)
+
                 except Exception as e:
-                    print(e)
+                    pass #print(e)
 
         self.send_entry()
 
@@ -216,6 +238,7 @@ class ServerNode:
             for node, value in self.nodos.items():
                 time.sleep(0.5)
                 if value['name'] != self._name:
+                    print(f'Try send msg to node {node}: {value["name"]}')
                     try:
 
                         msg = {
@@ -247,6 +270,8 @@ class ServerNode:
                             reply = json.loads(reply)
                             for key, value in reply.items():
 
+                                print(f'Recieved reply from: {reply["node_id"]}')
+
                                 if value == self._name:
                                     self._votes_in_term += 1
                                     print('Votes in term', self._votes_in_term )
@@ -255,6 +280,7 @@ class ServerNode:
                                 if self._votes_in_term > 2:
                                     self._state = 'Leader'
                                     print(f'Node {self._name} becomes {self._state}')
+                                    self.config_timeout()
                                     self.receive_msg()
 
                     except Exception as e:
@@ -292,7 +318,7 @@ class ServerNode:
                 # Une o socket ao host e a porta
                 tcp.bind(('', self.PORT))  # Recebe mensagens de qualquer host
 
-                # Habilita o servidor a aceitar 5 conexaoes
+                # Habilita o servidor a aceitar 5 conexao
                 tcp.listen(5)
 
                 # Aceita uma conexao. Retorna o objeto do socket (conn) e endereco do cliente (address)
@@ -314,9 +340,6 @@ class ServerNode:
                             break
 
                         msg = json.loads(msg)
-
-                        # Imprime os dados recebidos
-                        print('Msg recieved: ', msg)
 
                         # Envia para o cliente os dados recebidos
                         # conn.sendall(data)
@@ -360,7 +383,6 @@ class ServerNode:
                             print(f'Replying to {msg["candidate_id"]}')
                             conn.sendall(reply_msg.encode('utf-8'))
 
-
     def reply_append_entry(self, append_entry_msg):
         """
         An entry is committed once a majority of followers acknowledge it...
@@ -368,7 +390,8 @@ class ServerNode:
         :return:
         """
         # Refreshes election timeout
-        self._election_timeout = self._election_timeout()
+        self._election_timeout = self.set_election_timeout()
+        self._state = "Follower"
 
         ack_msg = {
             'client_id': self._name,
