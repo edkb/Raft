@@ -15,8 +15,6 @@ class ServerNode:
         'node1': {'name': 'a', 'port': 5001},
         'node2': {'name': 'b', 'port': 5002},
         'node3': {'name': 'c', 'port': 5003},
-        'node4': {'name': 'd', 'port': 5004},
-        'node5': {'name': 'e', 'port': 5005},
     }
 
     def __init__(self, node_id, node_port):
@@ -36,7 +34,7 @@ class ServerNode:
         # Persistent state on all servers
         self._current_term = 0   # Latest term server has seen
         self._voted_for = None   # Candidate id that received vote in current term
-        self._log = []           # log entries; each entry contains command for state machine, and term when entry was received by leader
+        self._log = None         # log entries; each entry contains command for state machine, and term when entry was received by leader
 
         # Volatile state on all servers
         self._commit_index = 0   # Index of highest log entry known to be committed
@@ -46,6 +44,7 @@ class ServerNode:
         self._next_index  = 0    # Index of the next log entry to send to that server, also known as last log index
         self._match_index = 0    # Index of highest log entry known to be replicated on server, also known as last log term
 
+        self._ack_log = 0
         self._leader = None
         self.start()
 
@@ -129,7 +128,12 @@ class ServerNode:
         pass
 
     def commit(self):
-        pass
+        commit_msg = str(self._log[0])
+        print(type(commit_msg))
+        print('Commiting msg: ', commit_msg)
+        with open(f'{self._name}.log') as log_file:
+            log_file.write(commit_msg)
+            self._log = []
 
     def notify_followers(self):
         pass
@@ -157,7 +161,8 @@ class ServerNode:
                         'leader_port': self.PORT,  # AppendEntries requests include the network address of the leader
                         'prev_log_index': self._last_applied,
                         'prev_log_term': self._commit_index,
-                        'leader_commit': None
+                        'leader_commit': None,
+                        'change': self._log
                     }
                     msg = json.dumps(msg)
 
@@ -173,8 +178,27 @@ class ServerNode:
 
                         # Recebe dados do servidor
                         reply = tcp.recv(1024).decode('utf-8')
+                        reply = json.loads(reply)
 
                         print('Append reply: ', reply)
+
+                        if len(reply['change'][0]) > 0:
+                            ack_change = reply['change'][0]
+                            print('Recieved change: ', ack_change)
+                            print('Log:', self._log)
+
+                            if ack_change == self._log:
+                                self._ack_log += 1
+
+                                if self._ack_log > 2:
+                                    self.commit()
+                                    self._ack_log = 0
+
+                                    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as tcp:
+                                        # Connects to server destination
+                                        tcp.connect(('', 5000))
+                                        # Envia mensagem
+                                        tcp.sendall(msg.encode('utf-8'))
 
                 except Exception as e:
                     print(e)
@@ -255,109 +279,95 @@ class ServerNode:
                     raise SystemExit()
         tcp.close()
 
-    def send_msg(self, msg, node_port, host='localhost'):
-
-        print(f'Sending: {msg} to node in port {node_port}')
-        # Creates tcp socket
-        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as tcp:
-
-            # Connects to server destination
-            tcp.connect((host, node_port))
-
-            # Envia mensagem
-            tcp.sendall(msg.encode('utf-8'))
-
-            # Recebe dados do servidor
-            data = tcp.recv(1024)
-
-        return data
-
     def conn_loop(self, conn, address):
-            with conn:
-                print('Connected by', address)
+        with conn:
+            print('Connected by', address)
 
-                # Recebe os dados do cliente
-                msg = conn.recv(1024)
+            # Recebe os dados do cliente
+            msg = conn.recv(1024)
 
-                # Se der algo errado com os dados, sai do loop
-                if not msg:
-                    print('Nothing recieved')
-                    conn.close()
-                    return
+            # Se der algo errado com os dados, sai do loop
+            if not msg:
+                print('Nothing recieved')
+                conn.close()
+                return
 
-                msg = msg.decode('utf-8')
-                msg = json.loads(msg)
+            msg = msg.decode('utf-8')
+            msg = json.loads(msg)
 
-                # Imprime os dados recebidos
-                print('Msg recieved: ', msg)
+            # Imprime os dados recebidos
+            print('Msg recieved: ', msg)
 
-                # Envia para o cliente os dados recebidos
-                # conn.sendall(data)
+            # Envia para o cliente os dados recebidos
+            # conn.sendall(data)
 
-                # If it is a message sent from a client
-                if msg['type'] == 'client':
+            # If it is a message sent from a client
+            if msg['type'] == 'client':
 
-                    # Only the leader handles it
-                    if self.state == 'Leader':  # This process is called Log Replication
-                        # change goes to the leader
-                        self._log.append(msg['change'])  # Each change is added as an entry in the nodes's log
-                        # This log entry is currently uncommitted so it won't update the node's value.
+                print('Recieved msg from client')
 
-                        self.append_entries(
-                            msg)  # To commit the entry the node first replicates it to the follower nodes...
-                        # Then the leader waits until a majority of nodes have written the entry.
-                        # The entry is now committed on the leader node and the node state is "X"
-                        # The leader then notifies the followers that the entry is committed.
-                        # The cluster has now come to consensus about the system state.
+                # Only the leader handles it
+                if self._state == 'Leader':  # This process is called Log Replication
+                    # change goes to the leader
 
-                    # If a follower receives a message from a client the it must redirect to the leader
-                    else:
-                        self.send_msg(msg, port)
+                    print('Leader append log: ', msg['change'])
+                    self._log = (msg['change'])  # Each change is added as an entry in the nodes's log
+                    print(self._log)
+                    self._ack_log += 1
 
-                # If it is a append entry message from the leader
-                elif msg['type'] == 'apn_en':
-                    self._election_timeout = self.get_election_timeout()
+                    # This log entry is currently uncommitted so it won't update the node's value.
+
+                    # To commit the entry the node first replicates it to the follower nodes...
+                    # Then the leader waits until a majority of nodes have written the entry.
+                    # The entry is now committed on the leader node and the node state is "X"
+                    # The leader then notifies the followers that the entry is committed.
+                    # The cluster has now come to consensus about the system state.
+
+                # If a follower receives a message from a client the it must redirect to the leader
+                else:
+                    conn.sendall(('Not leader').encode('utf-8'))
+
+            # If it is a append entry message from the leader
+            elif msg['type'] == 'apn_en':
+                self._election_timeout = self.get_election_timeout()
+                self.config_timeout()
+                self._state = "Follower"
+                self._log.append(msg['change'])
+
+                ack_msg = {
+                    'client_id': self._name,
+                    'term': self._current_term,
+                    'type': 'ack_append_entry',
+                    'change': self._log
+                }
+
+                reply = json.dumps(ack_msg)
+                conn.sendall(reply.encode('utf-8'))
+                self._log = []
+
+            elif msg['type'] == 'req_vote':
+
+                if msg['term'] > self._current_term:
+
+                    self._state = "Follower"  # Becomes follower again if term is outdated
+                    print('Follower')
+
+                    self._current_term = msg['term']
+                    self._voted_for = msg['candidate_id']
+                    reply_vote = {
+                        'candidate_id': msg['candidate_id']
+                    }
+                    self._election_timeout = self.get_election_timeout()  # ...and the node resets its election timeout.
                     self.config_timeout()
-                    self._state = "Follower"
 
-                    ack_msg = {
-                        'client_id': self._name,
-                        'term': self._current_term,
-                        'type': 'ack_append_entry'
+                else:
+                    reply_vote = {
+                        'candidate_id': self._voted_for
                     }
-                    reply = json.dumps(ack_msg)
-                    conn.sendall(reply.encode('utf-8'))
 
-                elif msg['type'] == 'heart_beat':
-                    reply = {
-                        'type': 'heart_beat_reply',
-                        'client_if': self._name
-                    }
-                    conn.sendall(reply.encode('utf-8'))
-
-                elif msg['type'] == 'req_vote':
-
-                    if msg['term'] > self._current_term:
-
-                        self._state = "Follower"  # Becomes follower again if term is outdated
-                        print('Follower')
-
-                        self._current_term = msg['term']
-                        self._voted_for = msg['candidate_id']
-                        reply_vote = {
-                            'candidate_id': msg['candidate_id']
-                        }
-                        self._election_timeout = self.get_election_timeout()  # ...and the node resets its election timeout.
-                        self.config_timeout()
-
-                    else:
-                        reply_vote = {
-                            'candidate_id': self._voted_for
-                        }
-
-                    reply_msg = json.dumps(reply_vote)
-                    print(f'Replying to {msg["candidate_id"]}')
-                    conn.sendall(reply_msg.encode('utf-8'))
+                reply_msg = json.dumps(reply_vote)
+                print(f'Replying to {msg["candidate_id"]}')
+                conn.sendall(reply_msg.encode('utf-8'))
 
     def receive_msg(self):
 
