@@ -34,7 +34,7 @@ class ServerNode:
         # Persistent state on all servers
         self._current_term = 0   # Latest term server has seen
         self._voted_for = None   # Candidate id that received vote in current term
-        self._log = None         # log entries; each entry contains command for state machine, and term when entry was received by leader
+        self._log = ''         # log entries; each entry contains command for state machine, and term when entry was received by leader
 
         # Volatile state on all servers
         self._commit_index = 0   # Index of highest log entry known to be committed
@@ -43,6 +43,8 @@ class ServerNode:
         # Volatile state on leaders, for each server
         self._next_index  = 0    # Index of the next log entry to send to that server, also known as last log index
         self._match_index = 0    # Index of highest log entry known to be replicated on server, also known as last log term
+
+        self._to_commit = False
 
         self._ack_log = 0
         self._leader = None
@@ -128,12 +130,38 @@ class ServerNode:
         pass
 
     def commit(self):
-        commit_msg = str(self._log[0])
+        commit_msg = str(self._log)
         print(type(commit_msg))
         print('Commiting msg: ', commit_msg)
-        with open(f'{self._name}.log') as log_file:
+        with open(f'{self._name}.log', 'a') as log_file:
             log_file.write(commit_msg)
-            self._log = []
+
+    def send_commit(self):
+        commit_msg = str(self._log)
+        for node, value in self.nodos.items():
+            if value['name'] != self._name:
+                try:
+                    print(f'Leader trying to commit {node}: {value["name"]}')
+                    msg = {
+                        'type': 'commit',
+                        'term': self._current_term,
+                        'leader_id': self._name,
+                        'leader_port': self.PORT,  # AppendEntries requests include the network address of the leader
+                        'prev_log_index': self._last_applied,
+                        'prev_log_term': self._commit_index,
+                        'leader_commit': self._to_commit,
+                        'change': commit_msg
+                    }
+                    msg = json.dumps(msg)
+
+                    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as tcp:
+                        # Connects to server destination
+                        tcp.connect(('', value['port']))
+                        # Envia mensagem
+                        tcp.sendall(msg.encode('utf-8'))
+
+                except Exception as e:
+                    print(e)
 
     def notify_followers(self):
         pass
@@ -161,7 +189,7 @@ class ServerNode:
                         'leader_port': self.PORT,  # AppendEntries requests include the network address of the leader
                         'prev_log_index': self._last_applied,
                         'prev_log_term': self._commit_index,
-                        'leader_commit': None,
+                        'leader_commit': self._to_commit,
                         'change': self._log
                     }
                     msg = json.dumps(msg)
@@ -182,8 +210,8 @@ class ServerNode:
 
                         print('Append reply: ', reply)
 
-                        if len(reply['change'][0]) > 0:
-                            ack_change = reply['change'][0]
+                        if len(reply['change']) > 0:
+                            ack_change = reply['change']
                             print('Recieved change: ', ack_change)
                             print('Log:', self._log)
 
@@ -192,13 +220,9 @@ class ServerNode:
 
                                 if self._ack_log > 2:
                                     self.commit()
+                                    self.send_commit()
                                     self._ack_log = 0
-
-                                    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as tcp:
-                                        # Connects to server destination
-                                        tcp.connect(('', 5000))
-                                        # Envia mensagem
-                                        tcp.sendall(msg.encode('utf-8'))
+                                    self._log = ''
 
                 except Exception as e:
                     print(e)
@@ -332,7 +356,7 @@ class ServerNode:
                 self._election_timeout = self.get_election_timeout()
                 self.config_timeout()
                 self._state = "Follower"
-                self._log.append(msg['change'])
+                self._log = (msg['change'])
 
                 ack_msg = {
                     'client_id': self._name,
@@ -343,7 +367,10 @@ class ServerNode:
 
                 reply = json.dumps(ack_msg)
                 conn.sendall(reply.encode('utf-8'))
-                self._log = []
+
+            elif msg['type'] == 'commit':
+                self.commit()
+                self._log = ''
 
             elif msg['type'] == 'req_vote':
 
@@ -424,9 +451,9 @@ class ServerNode:
     def get_hearbeat_timeout(self):
         """
          Set a hearbeat  timeout for leader node
-        :return: timeout of one seconds
+        :return: timeout of two seconds
         """
-        return 1
+        return 2
 
 
 if __name__ == "__main__":
